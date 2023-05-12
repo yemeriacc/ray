@@ -141,7 +141,6 @@ jobs:
           git checkout master
           git merge --squash new-branch
           git commit -m "Squashed commit message"
-          git push
           
       - name: Delete new branch
         run: |
