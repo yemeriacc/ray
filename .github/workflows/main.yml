@@ -1,0 +1,148 @@
+name: Create diagram
+on:
+  workflow_dispatch: {}
+  push:
+    branches:
+      - master
+
+jobs:
+  get_data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          ref: 'refs/heads/master'
+          fetch-depth: 0
+      - name: Create new branch
+        run: |
+          git checkout -b new-branch
+          git push -u origin new-branch
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          output_file: "root.svg"
+      
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/"
+          output_file: "src/src.svg"
+      
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/"
+          output_file: "src/src_ray.svg"
+       
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/mock/"
+          output_file: "src/src_mock.svg"    
+          
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/common"
+          output_file: "src/ray/src_ray_common.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/core_worker"
+          output_file: "src/ray/src_ray_core_worker.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/design_docs"
+          output_file: "src/ray/src_ray_design_docs.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/gcs"
+          output_file: "src/ray/src_ray_gcs.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/object_manager"
+          output_file: "src/ray/src_ray_object_manager.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/protobuf"
+          output_file: "src/ray/src_ray_protobuf.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/pubsub"
+          output_file: "src/ray/src_ray_pubsub.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/raylet"
+          output_file: "src/ray/src_ray_raylet.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/raylet_client"
+          output_file: "src/ray/src_ray_raylet_client.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/rpc"
+          output_file: "src/ray/src_ray_rpc.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/stats"
+          output_file: "src/ray/src_ray_stats.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/thirdparty"
+          output_file: "src/ray/src_ray_thirdparty.svg"
+
+      - name: Update diagram
+        uses: githubocto/repo-visualizer@main
+        with:
+          excluded_paths: "ignore,.github"
+          root_path: "src/ray/util"
+          output_file: "src/ray/src_ray_util.svg"
+          
+      - name: Squash commits
+        run: |
+          git checkout master
+          git merge --squash new-branch
+          git commit -m "Squashed commit message"
+          git push
+          
+      - name: Delete new branch
+        run: |
+          git push origin --delete new-branch
