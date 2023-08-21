@@ -3,6 +3,7 @@ import os
 import signal
 import sys
 import tempfile
+import time
 import urllib.request
 from uuid import uuid4
 
@@ -144,7 +145,7 @@ async def test_get_all_job_info(call_ray_start, tmp_path):  # noqa: F811
     )
 
     found = False
-    for job_table_entry in (await gcs_aio_client.get_all_job_info()).job_info_list:
+    for job_table_entry in (await gcs_aio_client.get_all_job_info()).values():
         if job_table_entry.config.metadata.get(JOB_ID_METADATA_KEY) == submission_id:
             found = True
             # Check that the job info is populated correctly.
@@ -166,6 +167,88 @@ async def test_get_all_job_info(call_ray_start, tmp_path):  # noqa: F811
     assert found
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "call_ray_start",
+    ["ray start --head"],
+    indirect=True,
+)
+async def test_get_all_job_info_with_is_running_tasks(call_ray_start):  # noqa: F811
+    """Test the is_running_tasks bit in the GCS get_all_job_info API."""
+
+    address_info = ray.init(address=call_ray_start)
+    gcs_aio_client = GcsAioClient(
+        address=address_info["gcs_address"], nums_reconnect_retry=0
+    )
+
+    @ray.remote
+    def sleep_forever():
+        while True:
+            time.sleep(1)
+
+    object_ref = sleep_forever.remote()
+
+    async def check_is_running_tasks(job_id, expected_is_running_tasks):
+        """Return True if the driver indicated by job_id is currently running tasks."""
+        found = False
+        for job_table_entry in (await gcs_aio_client.get_all_job_info()).values():
+            if job_table_entry.job_id.hex() == job_id:
+                found = True
+                return job_table_entry.is_running_tasks == expected_is_running_tasks
+        assert found
+
+    # Get the job id for this driver.
+    job_id = ray.get_runtime_context().get_job_id()
+
+    # Task should be running.
+    assert await check_is_running_tasks(job_id, True)
+
+    # Kill the task.
+    ray.cancel(object_ref)
+
+    # Task should not be running.
+    await async_wait_for_condition_async_predicate(
+        lambda: check_is_running_tasks(job_id, False), timeout=30
+    )
+
+    # Shutdown and start a new driver.
+    ray.shutdown()
+    ray.init(address=call_ray_start)
+
+    old_job_id = job_id
+    job_id = ray.get_runtime_context().get_job_id()
+    assert old_job_id != job_id
+
+    new_object_ref = sleep_forever.remote()
+
+    # Tasks should still not be running for the old driver.
+    assert await check_is_running_tasks(old_job_id, False)
+
+    # Task should be running for the new driver.
+    assert await check_is_running_tasks(job_id, True)
+
+    # Start an actor that will run forever.
+    @ray.remote
+    class Actor:
+        pass
+
+    actor = Actor.remote()
+
+    # Cancel the task.
+    ray.cancel(new_object_ref)
+
+    # The actor is still running, so is_running_tasks should be true.
+    assert await check_is_running_tasks(job_id, True)
+
+    # Kill the actor.
+    ray.kill(actor)
+
+    # The actor is no longer running, so is_running_tasks should be false.
+    await async_wait_for_condition_async_predicate(
+        lambda: check_is_running_tasks(job_id, False), timeout=30
+    )
+
+
 @pytest.fixture(scope="module")
 def shared_ray_instance():
     # Remove ray address for test ray cluster in case we have
@@ -173,26 +256,35 @@ def shared_ray_instance():
     # submissions.
     old_ray_address = os.environ.pop(RAY_ADDRESS_ENVIRONMENT_VARIABLE, None)
 
-    yield ray.init(
-        num_cpus=16,
-        num_gpus=1,
-        resources={"Custom": 1},
-        namespace=TEST_NAMESPACE,
-        log_to_driver=True,
-    )
+    yield from create_ray_cluster()
 
     if old_ray_address is not None:
         os.environ[RAY_ADDRESS_ENVIRONMENT_VARIABLE] = old_ray_address
 
 
+def create_ray_cluster(_tracing_startup_hook=None):
+    return ray.init(
+        num_cpus=16,
+        num_gpus=1,
+        resources={"Custom": 1},
+        namespace=TEST_NAMESPACE,
+        log_to_driver=True,
+        _tracing_startup_hook=_tracing_startup_hook,
+    )
+
+
 @pytest.mark.asyncio
 @pytest.fixture
 async def job_manager(shared_ray_instance, tmp_path):
-    address_info = shared_ray_instance
+    yield create_job_manager(shared_ray_instance, tmp_path)
+
+
+def create_job_manager(ray_cluster, tmp_path):
+    address_info = ray_cluster
     gcs_aio_client = GcsAioClient(
         address=address_info["gcs_address"], nums_reconnect_retry=0
     )
-    yield JobManager(gcs_aio_client, tmp_path)
+    return JobManager(gcs_aio_client, tmp_path)
 
 
 def _driver_script_path(file_name: str) -> str:
@@ -530,6 +622,56 @@ class TestRuntimeEnv:
         )
         assert token in logs, logs
         assert "JOB_1_VAR" in logs
+
+    @pytest.mark.parametrize(
+        "tracing_enabled",
+        [
+            False,
+            # TODO(issues/38633): local code loading is broken when tracing is enabled
+            # True,
+        ],
+    )
+    async def test_user_provided_job_config_honored_by_worker(
+        self, tracing_enabled, tmp_path
+    ):
+        """Ensures that the JobConfig instance injected into ray.init in the driver
+        script is honored even in case when job is submitted via JobManager.submit_job
+        API (involving RAY_JOB_CONFIG_JSON_ENV_VAR being set in child process env)
+        """
+
+        if tracing_enabled:
+            tracing_startup_hook = (
+                "ray.util.tracing.setup_local_tmp_tracing:setup_tracing"
+            )
+        else:
+            tracing_startup_hook = None
+
+        with create_ray_cluster(_tracing_startup_hook=tracing_startup_hook) as cluster:
+            job_manager = create_job_manager(cluster, tmp_path)
+
+            driver_script_path = _driver_script_path(
+                "check_code_search_path_is_propagated.py"
+            )
+
+            job_id = await job_manager.submit_job(
+                entrypoint=f"python {driver_script_path}",
+                # NOTE: We inject runtime_env in here, but also specify the JobConfig in
+                #       the driver script: settings to JobConfig (other than the
+                #       runtime_env) passed in via ray.init(...) have to be respected
+                #       along with the runtime_env passed from submit_job API
+                runtime_env={"env_vars": {"TEST_SUBPROCESS_RANDOM_VAR": "0xDEEDDEED"}},
+            )
+
+            await async_wait_for_condition_async_predicate(
+                check_job_succeeded, job_manager=job_manager, job_id=job_id
+            )
+
+            logs = job_manager.get_job_logs(job_id)
+
+            print("[DBG] job logs:\n", logs)
+
+            assert "Code search path is propagated" in logs, logs
+            assert "0xDEEDDEED" in logs, logs
 
     async def test_failed_runtime_env_validation(self, job_manager):
         """Ensure job status is correctly set as failed if job has an invalid
@@ -1053,6 +1195,7 @@ async def test_job_runs_with_no_resources_available(job_manager):
         ray.cancel(hanging_ref)
 
 
+@pytest.mark.asyncio
 async def test_failed_job_logs_max_char(job_manager):
     """Test failed jobs does not print out too many logs"""
 
@@ -1065,7 +1208,7 @@ async def test_failed_job_logs_max_char(job_manager):
         entrypoint=print_large_logs_cmd,
     )
 
-    await async_wait_for_condition(
+    await async_wait_for_condition_async_predicate(
         check_job_failed, job_manager=job_manager, job_id=job_id
     )
 
@@ -1073,7 +1216,8 @@ async def test_failed_job_logs_max_char(job_manager):
     job_info = await job_manager.get_job_info(job_id)
     assert job_info
     assert len(job_info.message) == 20000 + len(
-        "Job failed due to an application error, " "last available logs:\n"
+        "Job entrypoint command failed with exit code 1,"
+        " last available logs (truncated to 20,000 chars):\n"
     )
 
 
