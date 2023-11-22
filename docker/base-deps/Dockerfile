@@ -8,6 +8,8 @@ ARG BASE_IMAGE
 # If this arg is not "autoscaler" then no autoscaler requirements will be included
 ARG AUTOSCALER="autoscaler"
 ENV TZ=America/Los_Angeles
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
 # TODO(ilr) $HOME seems to point to result in "" instead of "/home/ray"
 ENV PATH "/home/ray/anaconda3/bin:$PATH"
 ARG DEBIAN_FRONTEND=noninteractive
@@ -48,7 +50,7 @@ RUN sudo apt-get update -y && sudo apt-get upgrade -y \
         openssh-client \
         gnupg; fi) \
     && if [[ "${PYTHON_VERSION}" = "3.11" || "${PYTHON_VERSION}" =~ ^3\.11\. ]]; then \
-            MINICONDA_VERSION="py310_23.3.1-0"; \
+            MINICONDA_VERSION="py311_23.10.0-1"; \
             LIBGCC=(libgcc-ng); \
         else \
             MINICONDA_VERSION="py37_23.1.0-1"; \
